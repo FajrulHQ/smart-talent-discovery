@@ -1,0 +1,10 @@
+# environment
+.venv
+.env
+
+client_secret*.json
+volumes
+data/*
+models/*
+*/__pycache__
+*/*/__pycache__
