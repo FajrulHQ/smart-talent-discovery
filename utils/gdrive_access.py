@@ -2,28 +2,40 @@ from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
 import os
 from dotenv import load_dotenv
-from .colpali_retriever import MilvusPDFImageRetriever
+from pymilvus import MilvusClient, utility
+from .colpali_retriever import MilvusColpali
 
 load_dotenv()
 
 GD_FOLDER_ID = os.getenv("GD_FOLDER_ID")  # Replace with actual folder ID
 LOCAL_FOLDER = "./data"       # Change to desired local path
 
-class GoogleDriveManager:
-    """Base class for Google Drive authentication."""
+class Configuration:
+    """
+    Base class for Google Drive authentication.
+    and Milvus configuration
+    """
     
-    def __init__(self):
-        self.authenticate()
-    
+    def __init__(self, milvus_uri: str, collection_name: str):
+        # self.authenticate()
+        self.milvus_uri = milvus_uri
+        self.collection_name = collection_name
+        self.client = MilvusClient(uri=milvus_uri)
+        self.milvus = MilvusColpali(self.client, self.collection_name)
+        self.milvus()
+
     def authenticate(self):
         """Authenticate with Google Drive."""
         self.gauth = GoogleAuth()
         self.gauth.LocalWebserverAuth()
         self.drive = GoogleDrive(self.gauth)
 
-class GoogleDriveAccess(GoogleDriveManager):
-    """Class to list and download files (including subfolders) from Google Drive."""
-    
+class GD2MilvusManager(Configuration):
+    """
+    Class to list and download files (including subfolders) from Google Drive
+    Store embedded document with colpali to Milvus.
+    """
+
     def list_files_and_folders(self, folder_id):
         """List all files and folders inside a given folder."""
         query = f"'{folder_id}' in parents and trashed=false"
@@ -69,5 +81,5 @@ class GoogleDriveAccess(GoogleDriveManager):
             self.download_files_recursive(subfolder_id, subfolder_path)
 
 if __name__ == "__main__":
-    gdrive_downloader = GoogleDriveAccess()
-    gdrive_downloader.download_files_recursive(GD_FOLDER_ID, LOCAL_FOLDER)
+    gdm = GD2MilvusManager()
+    gdm.download_files_recursive(GD_FOLDER_ID, LOCAL_FOLDER)

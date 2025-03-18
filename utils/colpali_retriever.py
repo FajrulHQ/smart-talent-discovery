@@ -1,5 +1,5 @@
 from transformers import AutoProcessor, AutoModelForPreTraining
-from pymilvus import DataType
+from pymilvus import DataType, Collection
 from PIL import Image
 import numpy as np
 import concurrent.futures
@@ -20,11 +20,19 @@ class MilvusColbertRetriever:
             self.client.load_collection(collection_name)
         self.dim = dim
 
-    def create_collection(self):
+    def __call__(self, drop=False):
+        if not self.client.has_collection(collection_name=self.collection_name) or drop:
+            self.create_collection(drop)
+            self.create_index()
+            self.create_scalar_index()
+
+
+    def create_collection(self, drop=False):
         # Create a new collection in Milvus for storing embeddings.
         # Drop the existing collection if it already exists and define the schema for the collection.
-        if self.client.has_collection(collection_name=self.collection_name):
+        if drop:
             self.client.drop_collection(collection_name=self.collection_name)
+
         schema = self.client.create_schema(
             auto_id=True,
             enable_dynamic_fields=True,
@@ -37,6 +45,7 @@ class MilvusColbertRetriever:
         schema.add_field(field_name="document_id", datatype=DataType.INT64)
         schema.add_field(field_name="page_number", datatype=DataType.INT64)
         schema.add_field(field_name="document_path", datatype=DataType.VARCHAR, max_length=65535)
+        schema.add_field(field_name="category", datatype=DataType.VARCHAR, max_length=10)
 
         self.client.create_collection(
             collection_name=self.collection_name, schema=schema
@@ -45,6 +54,7 @@ class MilvusColbertRetriever:
     def create_index(self):
         # Create an index on the vector field to enable fast similarity search.
         # Releases and drops any existing index before creating a new one with specified parameters.
+        
         self.client.release_collection(collection_name=self.collection_name)
         self.client.drop_index(
             collection_name=self.collection_name, index_name="vector"
@@ -143,17 +153,23 @@ class MilvusColbertRetriever:
                     "document_id": data["document_id"],
                     "document_path": data["document_path"],
                     "page_number": data["page_number"],
+                    "category": data["category"],
                 }
                 for i in range(seq_length)
             ],
         )
 
-class MilvusPDFImageRetriever(MilvusColbertRetriever):
-    def __init__(self, milvus_client, collection_name, dim=128):
+class MilvusColpali(MilvusColbertRetriever):
+    def __init__(self, milvus_client, collection_name, dim=128, colpali_model="./models/vidore/colpali-v1.3-hf"):
         # Initialize with the parent class constructor
         super().__init__(milvus_client, collection_name, dim)
-        self.processor = AutoProcessor.from_pretrained("./models/vidore/colpali-v1.3-hf")
-        self.model = AutoModelForPreTraining.from_pretrained("./models/vidore/colpali-v1.3-hf")
+        self.processor = AutoProcessor.from_pretrained(colpali_model, use_fast=True)
+        self.model = AutoModelForPreTraining.from_pretrained(colpali_model)
+        
+        if torch.cuda.is_available():
+            self.model.to("cuda")
+        elif torch.backends.mps.is_available():
+            self.model.to("mps")
 
     def extract_images_from_pdf(self, pdf_path):
         """Extracts images from each page of a PDF file."""
@@ -167,7 +183,7 @@ class MilvusPDFImageRetriever(MilvusColbertRetriever):
             page_nums.append(page_num)
         return images, page_nums
 
-    def store_pdf_images_in_milvus(self, pdf_path, doc_id):
+    def store_pdf_images_in_milvus(self, pdf_path, category):
         """Extracts images, generates embeddings, and stores them in Milvus."""
         images, page_nums = self.extract_images_from_pdf(pdf_path)
         dataloader = DataLoader(
@@ -177,22 +193,37 @@ class MilvusPDFImageRetriever(MilvusColbertRetriever):
             collate_fn=lambda x: self.processor.process_images(x),
         )
         ds: list[torch.Tensor] = []
-        for batch_query in tqdm(dataloader, "Process embedding image"):
+        for page_num, batch_query in enumerate(dataloader, start=1):
             with torch.no_grad():
                 batch_query = {k: v.to(self.model.device) for k,v in batch_query.items()}
                 embeddings_query = self.model(**batch_query).embeddings
                 ds.extend(list(torch.unbind(embeddings_query)))
+
+        query_res = self.client.query(
+            collection_name=self.collection_name,
+            output_fields=["document_path", "document_id"],
+            order_by=[("document_id", "desc")],
+            limit=1,
+        )
+        filepath = os.path.abspath(pdf_path)
+
+        document_id = query_res[0]["document_id"] if query_res else 0
+        document_path = query_res[0]["document_path"] if query_res else None
+
+        if filepath != document_path:
+            document_id+=1
         
-        for page_num, vector in enumerate(tqdm(ds), start=1):
+        for page_num, vector in enumerate(ds, start=1):
             data = dict(
-                colbert_vecs=vector.float().numpy(),
-                document_id=doc_id,
-                document_path=os.path.abspath(pdf_path),
-                page_number=page_num
+                colbert_vecs=vector.cpu().float().numpy(),
+                document_id=document_id,
+                document_path=filepath,
+                page_number=page_num,
+                category=category
             )
             self.insert(data)
             
-        print(f"Stored images from {pdf_path} in Milvus.")
+        print(f" ⦿ Stored images from {pdf_path} in Milvus.")
 
     def search_pdf_images(self, query, top_k=5):
         """Searches for the most relevant images based on a query."""
