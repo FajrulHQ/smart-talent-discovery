@@ -2,6 +2,7 @@ from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
 import os
 from dotenv import load_dotenv
+from .colpali_retriever import MilvusPDFImageRetriever
 
 load_dotenv()
 
@@ -53,9 +54,13 @@ class GoogleDriveAccess(GoogleDriveManager):
             
         # Download files in the current folder
         for file_name, file_id in files:
+            print(f"{file_name} ✅")
+            if file_name in os.listdir(local_folder):
+                print(f" ⦿ Already Downloaded ✅")
+                continue
             file = self.drive.CreateFile({'id': file_id})
             file.GetContentFile(os.path.join(local_folder, file_name))
-            print(f"⦿ {file_name} ✅")
+            print(f" ⦿ Downloaded ✅")
 
         # Recursively download from subfolders
         for folder_name, subfolder_id in folders:

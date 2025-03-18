@@ -7,7 +7,7 @@ Smart Talent Discovery is an AI-based platform designed for efficient resume and
 - AI-powered Resume Retrieval: Uses advanced embedding techniques to process and index resumes.
 - Portfolio Analysis: Extracts insights from portfolios based on image embeddings.
 - Colpali Integration: Utilizes Colpali for visual document retrieval.
-- Gemma3 for Processing: Implements Gemma3 for multimodal question-answering (qa).
+- Gemma3 for QA: Implements Gemma3 for multimodal question-answering (qa).
 - Fast Search Capabilities: Enables quick and precise resume or portfolio for talent discovery.
 
 ### Installation
@@ -28,7 +28,7 @@ cd smart-talent-discovery
 ```
 
 **Create and activate a virtual environment:**
-```python
+```zsh
 python -m venv .venv
 source .venv/bin/activate  # On Windows use `venv\Scripts\activate`
 ```
