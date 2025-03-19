@@ -71,8 +71,12 @@ class GD2MilvusManager(Configuration):
                 print(f" ⦿ Already Downloaded ✅")
                 continue
             file = self.drive.CreateFile({'id': file_id})
-            file.GetContentFile(os.path.join(local_folder, file_name))
+            filepath = os.path.join(local_folder, file_name)
+            file.GetContentFile(filepath)
             print(f" ⦿ Downloaded ✅")
+
+            category = os.path.basename(os.path.dirname(filepath))
+            self.store_pdf_images_in_milvus(filepath, category)
 
         # Recursively download from subfolders
         for folder_name, subfolder_id in folders:
