@@ -5,6 +5,7 @@ import numpy as np
 import concurrent.futures
 from tqdm import tqdm
 import fitz
+from accelerate import infer_auto_device_map
 
 import os
 import torch
@@ -163,16 +164,12 @@ class MilvusColbertRetriever:
         )
 
 class MilvusColpali(MilvusColbertRetriever):
-    def __init__(self, milvus_client, collection_name, dim=128, colpali_model="./models/vidore/colpali-v1.3-hf"):
+    def __init__(self, milvus_client, collection_name, device, dim=128, colpali_model="./models/vidore/colpali-v1.3-hf"):
         # Initialize with the parent class constructor
         super().__init__(milvus_client, collection_name, dim)
         self.processor = AutoProcessor.from_pretrained(colpali_model, use_fast=True)
         self.model = AutoModelForPreTraining.from_pretrained(colpali_model)
-        
-        if torch.cuda.is_available():
-            self.model.to("cuda")
-        elif torch.backends.mps.is_available():
-            self.model.to("mps")
+        self.model.to(device)
 
     def extract_images_from_pdf(self, pdf_path):
         """Extracts images from each page of a PDF file."""
@@ -211,6 +208,7 @@ class MilvusColpali(MilvusColbertRetriever):
             )
             ds: list[torch.Tensor] = []
             for page_num, batch_query in enumerate(dataloader, start=1):
+                print(f"   ↪ Embed image of page {page_num}...")
                 with torch.no_grad():
                     batch_query = {k: v.to(self.model.device) for k,v in batch_query.items()}
                     embeddings_query = self.model(**batch_query).embeddings
@@ -240,9 +238,9 @@ class MilvusColpali(MilvusColbertRetriever):
                 )
                 self.insert(data)
                 
-            print(f" ⦿ Stored images in Milvus. ✅")
+            print(f"   ↪ Stored images in Milvus. ✅")
         else:
-            print(f" ⦿ Already embed in milvus ✅")
+            print(f"   ↪ Already embed in milvus ✅")
 
     def search_pdf_images(self, query, top_k=5):
         """Searches for the most relevant images based on a query."""

@@ -4,6 +4,7 @@ import os
 from dotenv import load_dotenv
 from pymilvus import MilvusClient, utility
 from .colpali_retriever import MilvusColpali
+import torch
 
 load_dotenv()
 
@@ -16,12 +17,17 @@ class Configuration:
     and Milvus configuration
     """
     
-    def __init__(self, milvus_uri: str, collection_name: str):
-        # self.authenticate()
+    def __init__(self, 
+                 milvus_uri: str, 
+                 collection_name: str, 
+                 device:str='cuda' if torch.cuda.is_available() else 'cpu'
+                 ):
+        self.authenticate()
         self.milvus_uri = milvus_uri
         self.collection_name = collection_name
         self.client = MilvusClient(uri=milvus_uri)
-        self.milvus = MilvusColpali(self.client, self.collection_name)
+        self.device = device
+        self.milvus = MilvusColpali(self.client, self.collection_name, self.device)
         self.milvus()
 
     def authenticate(self):
@@ -52,7 +58,7 @@ class GD2MilvusManager(Configuration):
         
         return files, folders
     
-    def download_files_recursive(self, folder_id, local_folder):
+    def download_files_recursive(self, folder_id, local_folder, auto_embed=False):
         """Recursively download all files from a Google Drive folder and its subfolders."""
         os.makedirs(local_folder, exist_ok=True)  # Ensure folder exists
 
@@ -66,21 +72,25 @@ class GD2MilvusManager(Configuration):
             
         # Download files in the current folder
         for file_name, file_id in files:
-            print(f"{file_name} ✅")
-            if file_name in os.listdir(local_folder):
-                print(f" ⦿ Already Downloaded ✅")
-                continue
+            print(f"  📄 {file_name}")
             file = self.drive.CreateFile({'id': file_id})
             filepath = os.path.join(local_folder, file_name)
-            file.GetContentFile(filepath)
-            print(f" ⦿ Downloaded ✅")
-
             category = os.path.basename(os.path.dirname(filepath))
-            self.store_pdf_images_in_milvus(filepath, category)
+            
+            if file_name in os.listdir(local_folder):
+                print(f"   ↪ Already Downloaded")
+                if auto_embed:
+                    self.milvus.store_pdf_images_in_milvus(filepath, category)
+                continue
+            
+            file.GetContentFile(filepath)
+            print(f"   ↪ Downloaded ✅")
+            if auto_embed:
+                self.milvus.store_pdf_images_in_milvus(filepath, category)
 
         # Recursively download from subfolders
         for folder_name, subfolder_id in folders:
-            print(f"{folder_name} 📁")
+            print(f"📁 {folder_name}")
             subfolder_path = os.path.join(local_folder, folder_name)
             self.download_files_recursive(subfolder_id, subfolder_path)
 
