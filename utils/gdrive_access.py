@@ -20,9 +20,10 @@ class Configuration:
     def __init__(self, 
                  milvus_uri: str, 
                  collection_name: str, 
+                 login=True,
                  device:str='cuda' if torch.cuda.is_available() else 'cpu'
                  ):
-        self.authenticate()
+        if login: self.authenticate()
         self.milvus_uri = milvus_uri
         self.collection_name = collection_name
         self.client = MilvusClient(uri=milvus_uri)

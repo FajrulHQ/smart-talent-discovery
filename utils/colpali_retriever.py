@@ -5,11 +5,11 @@ import numpy as np
 import concurrent.futures
 from tqdm import tqdm
 import fitz
-from accelerate import infer_auto_device_map
 
-import os
+import os, base64
 import torch
 from torch.utils.data import DataLoader
+from IPython.display import display, IFrame
 
 class MilvusColbertRetriever:
     def __init__(self, milvus_client, collection_name, dim=128):
@@ -103,37 +103,39 @@ class MilvusColbertRetriever:
             output_fields=["vector", "sequence_id", "document_id"],
             search_params=search_params,
         )
-        doc_ids = set()
+        document_ids = set()
         for r_id in range(len(results)):
             for r in range(len(results[r_id])):
-                doc_ids.add(results[r_id][r]["entity"]["document_id"])
+                document_ids.add(results[r_id][r]["entity"]["document_id"])
 
         scores = []
 
-        def rerank_single_doc(doc_id, data, client, collection_name):
+        def rerank_single_doc(document_id, data, client, collection_name):
             # Rerank a single document by retrieving its embeddings and calculating the similarity with the query.
             doc_colbert_vecs = client.query(
                 collection_name=collection_name,
-                filter=f"doc_id in [{doc_id}]",
-                output_fields=["sequence_id", "vector", "document_path"],
-                limit=200,
+                filter=f"document_id in [{document_id}]",
+                output_fields=["sequence_id", "vector", "document_path", "page_number"],
+                limit=500,
             )
             doc_vecs = np.vstack(
                 [doc_colbert_vecs[i]["vector"] for i in range(len(doc_colbert_vecs))]
             )
             score = np.dot(data, doc_vecs.T).max(1).sum()
-            return (score, doc_id)
+            document_path = next(iter(doc_colbert_vecs))["document_path"]
+            page_number = next(iter(doc_colbert_vecs))["page_number"]
+            return (score, document_id, document_path, page_number)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=300) as executor:
             futures = {
                 executor.submit(
-                    rerank_single_doc, doc_id, data, client, self.collection_name
-                ): doc_id
-                for doc_id in doc_ids
+                    rerank_single_doc, document_id, data, self.client, self.collection_name
+                ): document_id
+                for document_id in document_ids
             }
             for future in concurrent.futures.as_completed(futures):
-                score, doc_id = future.result()
-                scores.append((score, doc_id))
+                result = future.result()
+                scores.append(result)
 
         scores.sort(key=lambda x: x[0], reverse=True)
         if len(scores) >= topk:
@@ -170,6 +172,23 @@ class MilvusColpali(MilvusColbertRetriever):
         self.processor = AutoProcessor.from_pretrained(colpali_model, use_fast=True)
         self.model = AutoModelForPreTraining.from_pretrained(colpali_model)
         self.model.to(device)
+
+    def search_query(self, query, topk=5):
+        batch_query = self.processor.process_queries(query)
+
+        with torch.no_grad():
+            batch_query = {k: v.to(self.model.device) for k, v in batch_query.items()}
+            embeddings_query = self.model(**batch_query).embeddings
+            vector = torch.unbind(embeddings_query)[0]
+            vector = vector.cpu().float().numpy()
+
+        result = self.search(vector, topk)
+        for i, (score, document_id, document_path, page_number) in enumerate(result, start=1):
+            filename = os.path.basename(document_path)
+            os.startfile(document_path)
+            print(f"{i:02}. {document_path} \n    [Page: {page_number}] Score: {score}\n")
+
+        return [res[2:4] for res in result]
 
     def extract_images_from_pdf(self, pdf_path):
         """Extracts images from each page of a PDF file."""
@@ -208,26 +227,20 @@ class MilvusColpali(MilvusColbertRetriever):
             )
             ds: list[torch.Tensor] = []
             for page_num, batch_query in enumerate(dataloader, start=1):
-                print(f"   ↪ Embed image of page {page_num}...")
+                # print(f"   ↪ Embed image of page {page_num}...")
                 with torch.no_grad():
                     batch_query = {k: v.to(self.model.device) for k,v in batch_query.items()}
                     embeddings_query = self.model(**batch_query).embeddings
                     ds.extend(list(torch.unbind(embeddings_query)))
 
-            query_last = self.client.query(
-                collection_name=self.collection_name,
-                output_fields=["document_path", "document_id"],
-                order_by=[("document_id", "desc")],
-                limit=1,
-            )
 
-            document_id = query_last[0]["document_id"] if query_last else 0
-            document_path = query_last[0]["document_path"] if query_last else None
-
-            if abspath != document_path:
-                document_id+=1
-            
             for page_num, vector in enumerate(ds, start=1):
+                query_count = self.client.query(
+                    collection_name=self.collection_name,
+                    output_fields=["count(*)"],
+                )
+                document_id = query_count[0]['count(*)']//1030 + page_num
+
                 data = dict(
                     colbert_vecs=vector.cpu().float().numpy(),
                     document_id=document_id,
@@ -238,11 +251,7 @@ class MilvusColpali(MilvusColbertRetriever):
                 )
                 self.insert(data)
                 
-            print(f"   ↪ Stored images in Milvus. ✅")
+            print(f"   ↪ Document {filename} stored in Milvus. ✅")
         else:
-            print(f"   ↪ Already embed in milvus ✅")
+            print(f"   ↪ Document {filename} already embed in milvus")
 
-    def search_pdf_images(self, query, top_k=5):
-        """Searches for the most relevant images based on a query."""
-        query_embedding = self.model.encode(query).tolist()
-        return self.search([query_embedding], top_k)
