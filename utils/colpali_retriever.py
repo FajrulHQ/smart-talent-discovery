@@ -5,11 +5,13 @@ import numpy as np
 import concurrent.futures
 from tqdm import tqdm
 import fitz
-
+import ollama
 import os, base64
 import torch
 from torch.utils.data import DataLoader
-from IPython.display import display, IFrame
+
+from rich.markdown import Markdown
+from rich.console import Console
 
 class MilvusColbertRetriever:
     def __init__(self, milvus_client, collection_name, dim=128):
@@ -172,10 +174,10 @@ class MilvusColpali(MilvusColbertRetriever):
         self.processor = AutoProcessor.from_pretrained(colpali_model, use_fast=True)
         self.model = AutoModelForPreTraining.from_pretrained(colpali_model)
         self.model.to(device)
+        self.console = Console()
 
     def search_query(self, query, topk=5):
         batch_query = self.processor.process_queries(query)
-
         with torch.no_grad():
             batch_query = {k: v.to(self.model.device) for k, v in batch_query.items()}
             embeddings_query = self.model(**batch_query).embeddings
@@ -188,7 +190,28 @@ class MilvusColpali(MilvusColbertRetriever):
             os.startfile(document_path)
             print(f"{i:02}. {document_path} \n    [Page: {page_number}] Score: {score}\n")
 
+            self.summarize_pdf(document_path)
+
         return [res[2:4] for res in result]
+
+    def summarize_pdf(self, pdf_path, ollama_model="gemma3:12b"):
+        try:
+            print('Summarizing...')
+            with fitz.open(pdf_path) as doc:
+                text = ""
+                for page in doc:
+                    text += page.get_text()
+
+            prompt = f"Ringkas dokumen berikut:\n\n{text}"
+            response = ollama.generate(model=ollama_model, prompt=prompt, stream=False)
+            summary = response['response']
+
+            self.console.print(Markdown(summary))
+            return summary
+
+        except Exception as e:
+            print(f"Error: {e}")
+            return None
 
     def extract_images_from_pdf(self, pdf_path):
         """Extracts images from each page of a PDF file."""

@@ -1,5 +1,3 @@
-accelerate>=0.26.0
-bitsandbytes
 huggingface_hub[cli]
 ipykernel
 numpy==2.2.4
@@ -9,3 +7,4 @@ pymilvus==2.5.5
 pymupdf
 python-dotenv
 transformers
+rich
